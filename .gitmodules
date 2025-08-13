@@ -1,0 +1,6 @@
+[submodule "interstellar"]
+	path = interstellar
+	url = https://github.com/eprosync/interstellar.git
+[submodule "luajit"]
+	path = luajit
+	url = https://github.com/eprosync/LuaJIT.git
