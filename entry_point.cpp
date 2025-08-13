@@ -47,7 +47,13 @@ int module_open()
             }
         }
 
-        SetConsoleTitle(TEXT("Interstellar Injectable"));
+        TCHAR path[MAX_PATH];
+        GetModuleFileName(NULL, path, MAX_PATH);
+        std::wstring full(path);
+        size_t pos = full.find_last_of(L"\\/");
+        std::wstring name = (pos != std::wstring::npos) ? full.substr(pos + 1) : full;
+        std::wstring title = L"Interstellar Injectable - " + name;
+        SetConsoleTitle(title.c_str());
         
         FILE* f;
         freopen_s(&f, "CONOUT$", "w", stdout);
