@@ -38,6 +38,46 @@ std::vector<std::string>& get_queue()
     return queue;
 }
 
+static std::atomic<bool> deferred = false;
+bool runtime(Interstellar::API::lua_State* L, std::chrono::milliseconds tickrate) {
+    auto tick_start = std::chrono::steady_clock::now();
+
+    Interstellar::runtime();
+
+    #ifdef _WIN32
+        std::unique_lock<std::mutex> guard(*mtx);
+        auto& queue = get_queue();
+        if (!queue.empty()) {
+            for (auto input : queue) {
+                if (input == "exit" || input == "quit") {
+                    Interstellar::Reflection::close(L);
+                    return false;
+                }
+
+                auto it = std::find(queue.begin(), queue.end(), input);
+                if (it != queue.end()) queue.erase(it);
+
+                guard.unlock();
+                std::string err = Interstellar::Reflection::execute(L, input, "@internal");
+                if (!err.empty()) {
+                    std::cout << "ERROR - " << err << std::endl;
+                }
+                guard.lock();
+            }
+        }
+        guard.unlock();
+    #endif
+
+    auto tick_end = std::chrono::steady_clock::now();
+    auto tick_duration = std::chrono::duration_cast<std::chrono::milliseconds>(tick_end - tick_start);
+
+    if (tick_duration < tickrate) {
+        std::this_thread::sleep_for(tickrate - tick_duration);
+    }
+
+    return true;
+}
+
 int module_open()
 {
     #ifdef _WIN32
@@ -140,6 +180,7 @@ int module_open()
     std::cout << "Ctrl+C or 'exit' or 'quit' to escape this program." << std::endl;
 
     #ifdef _WIN32
+        deferred = false;
         mtx = std::make_unique<std::mutex>();
 
         std::thread([]() {
@@ -163,6 +204,33 @@ int module_open()
         static std::chrono::milliseconds tickrate(16);
 
         {
+            using namespace Interstellar::API;
+            lua::pushvalue(L, indexer::global);
+            lua::getfield(L, -1, "task");
+            lua::remove(L, -2);
+
+            lua::pushcfunction(L, [](lua_State* L) {
+                deferred = luaL::checkboolean(L, 1);
+                return 0;
+            });
+            lua::setfield(L, -2, "deferred");
+
+            lua::pushcfunction(L, [](lua_State* L) {
+                if (deferred) runtime(L, tickrate);
+                return 0;
+            });
+            lua::setfield(L, -2, "invoke");
+
+            lua::pushcfunction(L, [](lua_State* L) {
+                Interstellar::Memory::push_address(L, &runtime);
+                return 1;
+            });
+            lua::setfield(L, -2, "subroutine");
+
+            lua::pop(L);
+        }
+
+        {
             std::string filename = "init.lua";
             std::ifstream file(filename);
             if (file) {
@@ -180,40 +248,7 @@ int module_open()
         }
 
         while (true) {
-            auto tick_start = std::chrono::steady_clock::now();
-
-            Interstellar::runtime();
-
-            #ifdef _WIN32
-                std::unique_lock<std::mutex> guard(*mtx);
-                auto& queue = get_queue();
-                if (!queue.empty()) {
-                    for (auto input : queue) {
-                        if (input == "exit" || input == "quit") {
-                            Interstellar::Reflection::close(L);
-                            return 0;
-                        }
-
-                        auto it = std::find(queue.begin(), queue.end(), input);
-                        if (it != queue.end()) queue.erase(it);
-
-                        guard.unlock();
-                        std::string err = Interstellar::Reflection::execute(L, input, "@internal");
-                        if (!err.empty()) {
-                            std::cout << "ERROR - " << err << std::endl;
-                        }
-                        guard.lock();
-                    }
-                }
-                guard.unlock();
-            #endif
-
-            auto tick_end = std::chrono::steady_clock::now();
-            auto tick_duration = std::chrono::duration_cast<std::chrono::milliseconds>(tick_end - tick_start);
-
-            if (tick_duration < tickrate) {
-                std::this_thread::sleep_for(tickrate - tick_duration);
-            }
+            if (!deferred) runtime(L, tickrate);
         }
     }).detach();
 
